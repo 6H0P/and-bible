@@ -18,6 +18,8 @@
 
 package net.bible.sharedui.reading.host.slots
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import net.bible.android.control.page.window.WindowControl
 import net.bible.sharedcore.search.ProgressJob
 import net.bible.sharedcore.search.SearchDocumentInfo
@@ -35,7 +37,21 @@ import org.crosswire.jsword.passage.Key
 interface SpeakSettingsPlatform {
     /** Opens the platform's text-to-speech settings screen. */
     fun openSystemTtsSettings()
+
+    /**
+     * The audio Bible folder row of the advanced Speak page (recorded chapters played instead of
+     * text-to-speech). Null hides the row; platforms without audio Bible support keep the default.
+     */
+    val audioBibleFolder: StateFlow<AudioBibleFolderRow?> get() = noAudioBibleFolder
+
+    /** Lets the user choose the folder that holds the audio Bible's chapter recordings. */
+    fun chooseAudioBibleFolder() {}
 }
+
+/** Localized title and current state of the audio Bible folder setting. */
+data class AudioBibleFolderRow(val title: String, val summary: String)
+
+private val noAudioBibleFolder: StateFlow<AudioBibleFolderRow?> = MutableStateFlow(null)
 
 /**
  * What the quick sheets ask the platform to do once the user has picked something. Each member is

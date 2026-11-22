@@ -37,6 +37,10 @@ class AndroidSpeakPlatform(private val context: Context) : SpeakPlatform {
             null
         }
 
+    override val audioBible: net.bible.service.device.speak.audio.AudioBiblePlayer by lazy {
+        AndroidAudioBiblePlayer(context, AudioBibleLibrary.get(context))
+    }
+
     override fun createEngine(listener: SpeakEngineListener): SpeakEngine =
         AndroidSpeakEngine(context.applicationContext, preferredEnginePackage, listener)
 

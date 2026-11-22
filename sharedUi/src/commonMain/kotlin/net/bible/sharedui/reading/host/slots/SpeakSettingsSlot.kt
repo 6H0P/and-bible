@@ -171,6 +171,7 @@ internal class SpeakSettingsState(
                 )
                 SpeakSheetPage.Advanced -> {
                     val advanced by advancedController.advanced.collectAsState()
+                    val audioBibleFolder by platform.audioBibleFolder.collectAsState()
                     AdvancedSpeakSettingsContent(
                         advanced = advanced,
                         onSynchronize = advancedController::setSynchronize,
@@ -179,6 +180,9 @@ internal class SpeakSettingsState(
                         onRestoreSettingsFromBookmarks = advancedController::setRestoreSettingsFromBookmarks,
                         onHelp = ::showAdvancedHelp,
                         scrollState = scroll,
+                        audioBibleFolderTitle = audioBibleFolder?.title,
+                        audioBibleFolderSummary = audioBibleFolder?.summary,
+                        onChooseAudioBibleFolder = platform::chooseAudioBibleFolder,
                     )
                 }
                 SpeakSheetPage.RepeatRange -> {

@@ -3,6 +3,7 @@ package net.bible.android.control.speak
 import net.bible.sharedcore.platform.speak.AudioFocus
 import net.bible.sharedcore.platform.speak.SpeakEngine
 import net.bible.sharedcore.platform.speak.SpeakEngineListener
+import net.bible.service.device.speak.audio.AudioBiblePlayer
 
 const val SPEAK_KEY = "speak"
 
@@ -23,6 +24,8 @@ interface SpeakPlatform : AudioFocus {
      */
     val isSupported: Boolean get() = true
     val maxSpeechInputLength: Int
+    /** Recorded audio Bible chapters, played instead of text-to-speech when available. Null: TTS only. */
+    val audioBible: AudioBiblePlayer? get() = null
     /** Read on every access so playback notices changes in the system engine preference. */
     val preferredEnginePackage: String?
     /** Registers earcons before reporting successful initialization on the engine callback thread. */

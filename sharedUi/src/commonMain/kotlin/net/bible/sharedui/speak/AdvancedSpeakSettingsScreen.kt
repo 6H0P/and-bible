@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkAdded
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -64,10 +65,21 @@ fun AdvancedSpeakSettingsContent(
     /** Hoistable scroll state (round 14b §7.b) — see [SpeakSettingsContent]'s own parameter for why
      *  it is defaulted. The Speak sheet passes its per-page state; the golden does not. */
     scrollState: ScrollState = rememberScrollState(),
+    /** Title of the audio Bible folder row; null hides the row (platforms without audio Bible support). */
+    audioBibleFolderTitle: String? = null,
+    audioBibleFolderSummary: String? = null,
+    onChooseAudioBibleFolder: () -> Unit = {},
 ) {
     val strings = LocalStrings.current
     Column(modifier.fillMaxWidth().verticalScroll(scrollState)) {
         AbSettingsCategoryHeader(strings.speakSettingsTitle)
+        if (audioBibleFolderTitle != null) {
+            AbSettingsRow(
+                title = audioBibleFolderTitle, summary = audioBibleFolderSummary, enabled = true,
+                onClick = onChooseAudioBibleFolder,
+                leadingIcon = { Icon(Icons.Filled.Headphones, contentDescription = null) },
+            )
+        }
         AbSwitchRow(
             strings.confSpeakSynchronize, advanced.synchronize, onSynchronize,
             leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null) },

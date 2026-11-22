@@ -30,7 +30,10 @@ import net.bible.sharedcore.platform.UserNotifier
 import net.bible.android.control.bookmark.BookmarkControl
 import net.bible.android.control.page.window.WindowControl
 import net.bible.android.control.speak.SpeakControl
+import net.bible.android.control.speak.SpeakChange
 import net.bible.android.control.speak.SpeakChanges
+import net.bible.service.device.speak.audio.AudioBibleListener
+import net.bible.service.device.speak.audio.AudioChapter
 import net.bible.android.control.speak.SpeakPlaybackState
 import net.bible.android.control.speak.SpeakSettingsChange
 import net.bible.android.control.speak.load
@@ -175,10 +178,109 @@ class TextToSpeechServiceManager constructor(
     /** only check timing when paused to prevent concurrency problems
      */
     val pausedTotalSeconds: Long
-        get() = mSpeakTiming.getSecsForChars(mSpeakTextProvider.getTotalChars())
+        get() = audioBook?.let { (platform.audioBible?.durationMs ?: 0L) / 1000 }
+            ?: mSpeakTiming.getSecsForChars(mSpeakTextProvider.getTotalChars())
 
     val pausedCompletedSeconds: Long
-        get() = mSpeakTiming.getSecsForChars(mSpeakTextProvider.getSpokenChars())
+        get() = audioBook?.let { (platform.audioBible?.positionMs ?: 0L) / 1000 }
+            ?: mSpeakTiming.getSecsForChars(mSpeakTextProvider.getSpokenChars())
+
+    // Audio Bible mode: a recorded chapter is playing through platform.audioBible instead of TTS.
+    // Non-null audioBook means audio mode is active. Guarded by lock, like the TTS state.
+    private var audioBook: SwordBook? = null
+    private var audioChapter: AudioChapter? = null
+    private val audioMode: Boolean get() = audioBook != null
+
+    private fun audioVerse(book: SwordBook, chapter: AudioChapter): Verse? {
+        val v11n = book.versification
+        return if (v11n.containsBook(chapter.book)) Verse(v11n, chapter.book, chapter.chapter, 1) else null
+    }
+
+    private val audioListener = object : AudioBibleListener {
+        override fun onChapterStarted(chapter: AudioChapter) {
+            val progress = lock.withLock {
+                val book = audioBook ?: return
+                audioChapter = chapter
+                setAudioStatus(book, chapter)
+                audioVerse(book, chapter)?.let { SpeakChange.Progress(book, it, null) }
+            }
+            SpeakChanges.notifyStatus()
+            progress?.let { SpeakChanges.notifyProgress(it) }
+        }
+
+        override fun onFinished() {
+            lock.withLock { if (audioMode) shutdown() }
+        }
+
+        override fun onError(message: String) {
+            lock.withLock {
+                if (!audioMode) return
+                Log.e(TAG, "Audio Bible playback failed: $message")
+                notifier.showError(message)
+                shutdown()
+            }
+        }
+    }
+
+    private fun setAudioStatus(book: SwordBook, chapter: AudioChapter) {
+        val text = audioVerse(book, chapter)?.let { "${it.book.osis} ${it.chapter}" } ?: chapter.book.osis
+        statusTexts = (0..3).associateWith { text }
+    }
+
+    /** Plays [chapter] as audio if the platform has a recording of it for [book]; returns false to use TTS. */
+    private fun startAudioIfAvailable(book: SwordBook, verse: Verse): Boolean {
+        val audio = platform.audioBible ?: return false
+        val chapter = AudioChapter(verse.book, verse.chapter)
+        if (!audio.hasAudio(book.initials, chapter)) return false
+
+        movement = null
+        startGeneration.incrementAndGet()
+        pendingGenericKey = null
+        clearTtsQueue()
+        shutdownTtsEngine()
+        if (!platform.requestAudioFocus { gained ->
+                pauseDueCall = !gained
+                callStateChanged(!gained)
+            }) {
+            Log.i(TAG, "Could not gain audio focus, not starting audio Bible")
+            platform.reportProblem(SpeakSetupProblem.AUDIO_FOCUS_DENIED)
+            shutdown()
+            return true
+        }
+        audioBook = book
+        audioChapter = chapter
+        initialized = true
+        isSpeaking = true
+        isPaused = false
+        audio.setSpeed(SpeakSettings.load().playbackSettings.speed / 100f)
+        audio.play(chapter, 0L, audioListener)
+        setAudioStatus(book, chapter)
+        fireStateChangeEvent()
+        return true
+    }
+
+    private fun stopAudio() {
+        if (!audioMode) return
+        platform.audioBible?.stop()
+        audioBook = null
+        audioChapter = null
+    }
+
+    /** Rewind/forward in audio mode: whole chapters for verse steps, otherwise a short jump in time. */
+    private fun moveAudio(amount: SpeakSettings.RewindAmount?, backwards: Boolean) {
+        val audio = platform.audioBible ?: return
+        val current = audioChapter ?: return
+        if (amount == SpeakSettings.RewindAmount.ONE_VERSE) {
+            val target = (if (backwards) audio.previous(current) else audio.next(current)) ?: return
+            audioChapter = target
+            isSpeaking = true
+            isPaused = false
+            audio.play(target, 0L, audioListener)
+            fireStateChangeEvent()
+        } else {
+            audio.seekBy(if (backwards) -AUDIO_SKIP_MS else AUDIO_SKIP_MS)
+        }
+    }
 
     private val startGeneration = atomic(0L)
     private var wasPaused = false
@@ -350,14 +452,18 @@ class TextToSpeechServiceManager constructor(
     }
 
     val currentlyPlayingKey: Key?
-        get() = mSpeakTextProvider.getCurrentlyPlayingKey()
+        get() = lock.withLock {
+            val book = audioBook
+            val chapter = audioChapter
+            if (book != null && chapter != null) audioVerse(book, chapter) else null
+        } ?: mSpeakTextProvider.getCurrentlyPlayingKey()
 
     /** True while speaking, paused, or while an engine start is pending (engine created, init callback not yet received). */
     val hasActiveSession: Boolean
         get() = isSpeaking || isPaused || (mTts != null && !engineReady)
 
     val currentlyPlayingBook: Book?
-        get() = mSpeakTextProvider.getCurrentlyPlayingBook()
+        get() = audioBook ?: mSpeakTextProvider.getCurrentlyPlayingBook()
 
     fun isLanguageAvailable(langCode: String): Boolean {
         return ttsLanguageSupport.isLangKnownToBeSupported(langCode)
@@ -365,6 +471,8 @@ class TextToSpeechServiceManager constructor(
 
     fun speakBible(book: SwordBook, verse: Verse) {
         lock.withLock {
+            stopAudio()
+            if (startAudioIfAvailable(book, verse)) return
             movement = null
             startGeneration.incrementAndGet()
             statusTexts = emptyMap()
@@ -379,6 +487,7 @@ class TextToSpeechServiceManager constructor(
 
     fun speakTextLegacy(book: Book, keyList: List<Key>, queue: Boolean) {
         lock.withLock {
+            stopAudio()
             movement = null
             val retainsQueue = queue && mSpeakTextProvider === legacySpeakTextProvider && isSpeaking && !isPaused &&
                 mTts != null && platform.preferredEnginePackage == configuredEnginePackage
@@ -395,6 +504,7 @@ class TextToSpeechServiceManager constructor(
 
     fun speakGeneric(key: BookAndKey) {
         lock.withLock {
+            stopAudio()
             movement = null
             startGeneration.incrementAndGet()
             statusTexts = emptyMap()
@@ -564,6 +674,12 @@ class TextToSpeechServiceManager constructor(
     fun forward(amount: SpeakSettings.RewindAmount?) = move(amount, backwards = false)
 
     private fun move(amount: SpeakSettings.RewindAmount?, backwards: Boolean) {
+        lock.withLock {
+            if (audioMode) {
+                moveAudio(amount, backwards)
+                return
+            }
+        }
         val request = lock.withLock { request() }
         launchRequest(request) {
             val paused = withContext(mainDispatcher) {
@@ -599,6 +715,16 @@ class TextToSpeechServiceManager constructor(
 
     private fun pause(willContinueAfterThis: Boolean, fractionCompleted: Double?) {
         lock.withLock {
+            if (audioMode) {
+                Log.i(TAG, "Pause audio Bible")
+                if (isSpeaking) {
+                    platform.audioBible?.pause()
+                    isPaused = true
+                    isSpeaking = false
+                    fireStateChangeEvent()
+                }
+                return
+            }
             val activeMovement = movement?.let { it.wasSpeaking && valid(it.request) } == true
             startGeneration.incrementAndGet()
             movement = null
@@ -630,6 +756,23 @@ class TextToSpeechServiceManager constructor(
 
     fun continueAfterPause(reloadBookmark: Boolean = true) {
         lock.withLock {
+            if (audioMode) {
+                Log.i(TAG, "Continue audio Bible after pause")
+                if (isPaused) {
+                    if (!platform.requestAudioFocus { gained ->
+                            pauseDueCall = !gained
+                            callStateChanged(!gained)
+                        }) {
+                        platform.reportProblem(SpeakSetupProblem.AUDIO_FOCUS_DENIED)
+                        return
+                    }
+                    platform.audioBible?.resume()
+                    isPaused = false
+                    isSpeaking = true
+                    fireStateChangeEvent()
+                }
+                return
+            }
             // Resume supersedes a held movement rather than restoring that movement's transient flags.
             if (movement?.let { valid(it.request) } == true) startGeneration.incrementAndGet()
             movement = null
@@ -774,6 +917,7 @@ class TextToSpeechServiceManager constructor(
 
     fun shutdown(willContinueAfter: Boolean = false) {
         lock.withLock {
+            stopAudio()
             movement = null
             startGeneration.incrementAndGet()
             statusTexts = emptyMap()
@@ -858,6 +1002,8 @@ class TextToSpeechServiceManager constructor(
     /** persist and restore pause state to allow pauses to continue over an app exit
      */
     private fun persistPauseState() {
+        // Audio Bible pauses are kept in memory only; a restart resumes from the chapter start.
+        if (audioMode) return
         Log.i(TAG, "Persisting Pause state")
         val isBible = mSpeakTextProvider === bibleSpeakTextProvider
 
@@ -905,6 +1051,10 @@ class TextToSpeechServiceManager constructor(
 
     fun updateSettings(change: SpeakSettingsChange) {
         lock.withLock {
+            if (audioMode) {
+                platform.audioBible?.setSpeed(change.speakSettings.playbackSettings.speed / 100f)
+                return
+            }
             mSpeakTextProvider.updateSettings(change)
             setRate(change.speakSettings.playbackSettings.speed)
             val request = request()
@@ -928,5 +1078,7 @@ class TextToSpeechServiceManager constructor(
         var EARCON_PRE_BOOK_CHANGE = "[pre-book-change]"
 
         private const val UTTERANCE_PREFIX = "AND-BIBLE-"
+        /** How far rewind/forward jumps within an audio Bible chapter. */
+        private const val AUDIO_SKIP_MS = 15_000L
     }
 }

@@ -17,6 +17,13 @@
 package net.bible.android.view.activity.page.screen
 
 import android.content.Context
+import android.net.Uri
+import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.flow.StateFlow
+import net.bible.android.platform.AudioBibleLibrary
+import net.bible.sharedui.reading.host.slots.AudioBibleFolderRow
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import net.bible.android.control.link.LinkControl
@@ -50,6 +57,22 @@ import org.crosswire.jsword.passage.Key
  */
 class AndroidSpeakSettingsPlatform(private val context: () -> Context) : SpeakSettingsPlatform {
     override fun openSystemTtsSettings() = openSystemTtsSettings(context())
+
+    override val audioBibleFolder: StateFlow<AudioBibleFolderRow?>
+        get() = AudioBibleLibrary.get(context()).row
+
+    /** Opens the system folder picker; the chosen folder is remembered and scanned for chapter recordings. */
+    override fun chooseAudioBibleFolder() {
+        val activity = context() as? ComponentActivity ?: return
+        var launcher: ActivityResultLauncher<Uri?>? = null
+        launcher = activity.activityResultRegistry.register(
+            "audioBibleFolder", ActivityResultContracts.OpenDocumentTree()
+        ) { uri ->
+            launcher?.unregister()
+            if (uri != null) AudioBibleLibrary.get(activity).setFolder(uri)
+        }
+        launcher.launch(null)
+    }
 }
 
 /**

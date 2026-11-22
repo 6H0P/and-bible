@@ -649,6 +649,12 @@
     <string name="speak_verse_range_to_repeat">Choose verse range to repeat</string>
     <string name="speak_ending_verse_must_be_later">Ending verse must be later than starting verse</string>
 
+    <string name="audio_bible_folder_title">Audio Bible folder</string>
+    <string name="audio_bible_folder_not_set">Not set. Choose a folder of chapter recordings to hear them instead of text-to-speech.</string>
+    <string name="audio_bible_folder_scanning">Looking for chapter recordings…</string>
+    <string name="audio_bible_folder_empty">No chapter recordings found in this folder.</string>
+    <string name="audio_bible_folder_found">%1$d chapter recordings found. Played for %2$s Bibles.</string>
+    <string name="audio_bible_playback_error">Could not play the audio Bible recording.</string>
     <string name="conf_speak_synchronize">Text follows speech</string>
     <string name="conf_speak_auto_bookmark">Automatic bookmarking</string>
     <string name="conf_save_playback_settings_to_bookmarks">Save playback settings to bookmarks</string>
