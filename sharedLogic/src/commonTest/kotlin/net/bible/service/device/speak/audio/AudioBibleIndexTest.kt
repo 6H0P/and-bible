@@ -89,6 +89,30 @@ class AudioBibleIndexTest {
         assertEquals(AudioChapter(BibleBook.EXOD, 1), restored.next(AudioChapter(BibleBook.GEN, 50)))
     }
 
+    private val timings = AudioVerseTimings.parse(
+        // Unsorted on purpose, plus a header-like line and a damaged line that must be ignored.
+        "book\tchapter\tverse\tms\nGen\t1\t2\t8100\nGen\t1\t1\t4360\nGen\t1\t3\t17180\nJohn\t3\t16\t120500\nGen\t1\tx\t1\n"
+    )
+
+    @Test
+    fun verseAtFindsTheVerseBeingRead() {
+        val gen1 = AudioChapter(BibleBook.GEN, 1)
+        assertNull(timings.verseAt(gen1, 1000)) // chapter announcement, before verse 1
+        assertEquals(1, timings.verseAt(gen1, 4360))
+        assertEquals(1, timings.verseAt(gen1, 8099))
+        assertEquals(2, timings.verseAt(gen1, 8100))
+        assertEquals(3, timings.verseAt(gen1, 600_000)) // past the last start: still the last verse
+        assertEquals(16, timings.verseAt(AudioChapter(BibleBook.JOHN, 3), 130_000))
+        assertNull(timings.verseAt(AudioChapter(BibleBook.EXOD, 1), 5000)) // no timings for the chapter
+        assertEquals(2, timings.chapterCount)
+    }
+
+    @Test
+    fun startOfGivesTheVerseStart() {
+        assertEquals(8100L, timings.startOf(AudioChapter(BibleBook.GEN, 1), 2))
+        assertNull(timings.startOf(AudioChapter(BibleBook.GEN, 1), 31))
+    }
+
     @Test
     fun deserializeSkipsDamagedLines() {
         val restored = AudioBibleIndex.deserialize("Gen\t1\turi:a\nnot a line\nNope\t2\turi:b\nExod\tx\turi:c")

@@ -52,6 +52,40 @@ object AudioBibleFileNames {
 }
 
 /**
+ * When each verse starts in each chapter recording, from a `verse_timings.tsv` file made by
+ * `scripts/audio-bible/align_verses.py`: one `OSIS-book<TAB>chapter<TAB>verse<TAB>start-ms` line per verse.
+ */
+class AudioVerseTimings(private val starts: Map<AudioChapter, List<Pair<Int, Long>>>) {
+    val chapterCount: Int get() = starts.size
+
+    /** The verse being read at [positionMs] of [chapter]'s recording; null before the first verse or without timings. */
+    fun verseAt(chapter: AudioChapter, positionMs: Long): Int? =
+        starts[chapter]?.lastOrNull { it.second <= positionMs }?.first
+
+    /** Where [verse] starts in [chapter]'s recording, if known. */
+    fun startOf(chapter: AudioChapter, verse: Int): Long? = starts[chapter]?.firstOrNull { it.first == verse }?.second
+
+    companion object {
+        val EMPTY = AudioVerseTimings(emptyMap())
+        const val FILE_NAME = "verse_timings.tsv"
+
+        fun parse(text: String): AudioVerseTimings {
+            val starts = HashMap<AudioChapter, MutableList<Pair<Int, Long>>>()
+            for (line in text.lineSequence()) {
+                val parts = line.trim().split('\t')
+                if (parts.size != 4) continue
+                val book = BibleBook.fromExactOSIS(parts[0]) ?: continue
+                val chapter = parts[1].toIntOrNull() ?: continue
+                val verse = parts[2].toIntOrNull() ?: continue
+                val startMs = parts[3].toLongOrNull() ?: continue
+                starts.getOrPut(AudioChapter(book, chapter)) { mutableListOf() } += verse to startMs
+            }
+            return AudioVerseTimings(starts.mapValues { (_, verses) -> verses.sortedBy { it.second } })
+        }
+    }
+}
+
+/**
  * Maps chapters to the location (a platform URI or path) of their audio file, and gives the playing order.
  */
 class AudioBibleIndex(private val locations: Map<AudioChapter, String>) {

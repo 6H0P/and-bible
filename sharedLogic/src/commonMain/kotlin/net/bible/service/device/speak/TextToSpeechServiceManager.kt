@@ -47,6 +47,7 @@ import org.crosswire.jsword.book.Book
 import org.crosswire.jsword.book.sword.SwordBook
 import org.crosswire.jsword.passage.Key
 import org.crosswire.jsword.passage.Verse
+import org.crosswire.jsword.passage.VerseRange
 
 import net.bible.sharedlogic.platform.LocaleSupport
 import net.bible.sharedlogic.platform.LocaleValue
@@ -189,20 +190,40 @@ class TextToSpeechServiceManager constructor(
     // Non-null audioBook means audio mode is active. Guarded by lock, like the TTS state.
     private var audioBook: SwordBook? = null
     private var audioChapter: AudioChapter? = null
+    /** The verse being read, from the recording's verse timings (1 when there are none). */
+    private var audioVerseNo = 1
     private val audioMode: Boolean get() = audioBook != null
 
-    private fun audioVerse(book: SwordBook, chapter: AudioChapter): Verse? {
+    private fun audioVerse(book: SwordBook, chapter: AudioChapter, verse: Int = audioVerseNo): Verse? {
         val v11n = book.versification
-        return if (v11n.containsBook(chapter.book)) Verse(v11n, chapter.book, chapter.chapter, 1) else null
+        return if (v11n.containsBook(chapter.book)) Verse(v11n, chapter.book, chapter.chapter, verse) else null
     }
+
+    /** Progress for the verse being read; a one-verse range so the reading view highlights it as it does for TTS. */
+    private fun audioProgress(book: SwordBook, chapter: AudioChapter): SpeakChange.Progress? =
+        audioVerse(book, chapter)?.let { SpeakChange.Progress(book, VerseRange(book.versification, it), null) }
 
     private val audioListener = object : AudioBibleListener {
         override fun onChapterStarted(chapter: AudioChapter) {
             val progress = lock.withLock {
                 val book = audioBook ?: return
+                // A new chapter (continuing on) starts from verse 1; the first chapter keeps its requested verse.
+                if (chapter != audioChapter) audioVerseNo = 1
                 audioChapter = chapter
                 setAudioStatus(book, chapter)
-                audioVerse(book, chapter)?.let { SpeakChange.Progress(book, it, null) }
+                audioProgress(book, chapter)
+            }
+            SpeakChanges.notifyStatus()
+            progress?.let { SpeakChanges.notifyProgress(it) }
+        }
+
+        override fun onVerseStarted(chapter: AudioChapter, verse: Int) {
+            val progress = lock.withLock {
+                val book = audioBook ?: return
+                if (chapter != audioChapter || verse == audioVerseNo) return
+                audioVerseNo = verse
+                setAudioStatus(book, chapter)
+                audioProgress(book, chapter)
             }
             SpeakChanges.notifyStatus()
             progress?.let { SpeakChanges.notifyProgress(it) }
@@ -223,7 +244,7 @@ class TextToSpeechServiceManager constructor(
     }
 
     private fun setAudioStatus(book: SwordBook, chapter: AudioChapter) {
-        val text = audioVerse(book, chapter)?.let { "${it.book.osis} ${it.chapter}" } ?: chapter.book.osis
+        val text = audioVerse(book, chapter)?.let { "${it.book.osis} ${it.chapter}:${it.verse}" } ?: chapter.book.osis
         statusTexts = (0..3).associateWith { text }
     }
 
@@ -247,13 +268,16 @@ class TextToSpeechServiceManager constructor(
             shutdown()
             return true
         }
+        // Start at the chosen verse when the recording's verse timings say where it begins.
+        val verseStart = if (verse.verse > 1) audio.verseStartMs(chapter, verse.verse) else null
         audioBook = book
         audioChapter = chapter
+        audioVerseNo = if (verseStart != null) verse.verse else 1
         initialized = true
         isSpeaking = true
         isPaused = false
         audio.setSpeed(SpeakSettings.load().playbackSettings.speed / 100f)
-        audio.play(chapter, 0L, audioListener)
+        audio.play(chapter, verseStart ?: 0L, audioListener)
         setAudioStatus(book, chapter)
         fireStateChangeEvent()
         return true
@@ -273,6 +297,7 @@ class TextToSpeechServiceManager constructor(
         if (amount == SpeakSettings.RewindAmount.ONE_VERSE) {
             val target = (if (backwards) audio.previous(current) else audio.next(current)) ?: return
             audioChapter = target
+            audioVerseNo = 1
             isSpeaking = true
             isPaused = false
             audio.play(target, 0L, audioListener)

@@ -22,6 +22,8 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.DocumentsContract
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +37,7 @@ import net.bible.service.device.speak.audio.AudioBibleIndex
 import net.bible.service.device.speak.audio.AudioBibleListener
 import net.bible.service.device.speak.audio.AudioBiblePlayer
 import net.bible.service.device.speak.audio.AudioChapter
+import net.bible.service.device.speak.audio.AudioVerseTimings
 import net.bible.sharedcore.log.Log
 import net.bible.sharedui.reading.host.slots.AudioBibleFolderRow
 import java.io.File
@@ -51,9 +54,14 @@ class AudioBibleLibrary(context: Context) {
     private val context = context.applicationContext
     private val prefs = this.context.getSharedPreferences("audio_bible", Context.MODE_PRIVATE)
     private val cacheFile = File(this.context.filesDir, "audio_bible_index.tsv")
+    private val timingsCacheFile = File(this.context.filesDir, "audio_bible_verse_timings.tsv")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile var index: AudioBibleIndex = loadCachedIndex()
+        private set
+
+    /** Verse start times from the folder's verse_timings.tsv, for highlighting the verse being read. */
+    @Volatile var timings: AudioVerseTimings = loadCachedTimings()
         private set
 
     private val _row = MutableStateFlow(row(scanning = false))
@@ -80,19 +88,30 @@ class AudioBibleLibrary(context: Context) {
         val uri = folderUri ?: return
         _row.value = row(scanning = true)
         scope.launch {
-            val scanned = try {
-                AudioBibleIndex.fromFiles(listFiles(uri))
+            val files = try {
+                listFiles(uri)
             } catch (e: Exception) {
                 Log.e(TAG, "Scanning audio Bible folder failed", e)
-                AudioBibleIndex(emptyMap())
+                emptyList()
             }
+            val scanned = AudioBibleIndex.fromFiles(files)
             index = scanned
+            val timingsText = files.firstOrNull { it.first == AudioVerseTimings.FILE_NAME }?.let { (_, location) ->
+                try {
+                    context.contentResolver.openInputStream(Uri.parse(location))?.use { it.reader().readText() }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Could not read verse timings", e)
+                    null
+                }
+            } ?: ""
+            timings = AudioVerseTimings.parse(timingsText)
             try {
                 cacheFile.writeText(scanned.serialize())
+                timingsCacheFile.writeText(timingsText)
             } catch (e: Exception) {
                 Log.e(TAG, "Could not cache audio Bible index", e)
             }
-            Log.i(TAG, "Audio Bible folder has ${scanned.size} chapter recordings")
+            Log.i(TAG, "Audio Bible folder has ${scanned.size} chapter recordings, ${timings.chapterCount} with verse timings")
             _row.value = row(scanning = false)
         }
     }
@@ -131,11 +150,20 @@ class AudioBibleLibrary(context: Context) {
         AudioBibleIndex(emptyMap())
     }
 
+    private fun loadCachedTimings(): AudioVerseTimings = try {
+        if (timingsCacheFile.exists()) AudioVerseTimings.parse(timingsCacheFile.readText()) else AudioVerseTimings.EMPTY
+    } catch (e: Exception) {
+        Log.e(TAG, "Could not read cached verse timings", e)
+        AudioVerseTimings.EMPTY
+    }
+
     private fun row(scanning: Boolean): AudioBibleFolderRow {
         val summary = when {
             folderUri == null -> context.getString(R.string.audio_bible_folder_not_set)
             scanning -> context.getString(R.string.audio_bible_folder_scanning)
             index.size == 0 -> context.getString(R.string.audio_bible_folder_empty)
+            timings.chapterCount > 0 ->
+                context.getString(R.string.audio_bible_folder_found_with_timings, index.size, MODULE_MATCH)
             else -> context.getString(R.string.audio_bible_folder_found, index.size, MODULE_MATCH)
         }
         return AudioBibleFolderRow(context.getString(R.string.audio_bible_folder_title), summary)
@@ -157,6 +185,10 @@ class AudioBibleLibrary(context: Context) {
  * Callbacks run on the main thread (the player is created from the speak service's main-thread calls).
  */
 class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleLibrary) : AudioBiblePlayer {
+    private companion object {
+        const val VERSE_TICK_MS = 200L
+    }
+
     private val context = context.applicationContext
     private var player: MediaPlayer? = null
     private var prepared = false
@@ -165,6 +197,23 @@ class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleL
     private var current: AudioChapter? = null
     /** Position to resume from when the player had to be recreated. */
     private var resumeFromMs = 0L
+    private var listener: AudioBibleListener? = null
+    private var lastVerse: Int? = null
+    private val handler = Handler(Looper.getMainLooper())
+    /** While playing, reports the verse being read whenever it changes (needs verse timings). */
+    private val verseTicker = object : Runnable {
+        override fun run() {
+            val mp = player
+            val chapter = current
+            if (mp == null || chapter == null || !prepared) return
+            val verse = library.timings.verseAt(chapter, mp.currentPosition.toLong())
+            if (verse != null && verse != lastVerse) {
+                lastVerse = verse
+                listener?.onVerseStarted(chapter, verse)
+            }
+            if (mp.isPlaying) handler.postDelayed(this, VERSE_TICK_MS)
+        }
+    }
 
     override fun hasAudio(bookInitials: String, chapter: AudioChapter): Boolean =
         library.appliesTo(bookInitials) && library.index.contains(chapter)
@@ -172,6 +221,8 @@ class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleL
     override fun play(chapter: AudioChapter, startMs: Long, listener: AudioBibleListener) {
         release()
         current = chapter
+        this.listener = listener
+        lastVerse = null
         wantPlaying = true
         val location = library.index.locationOf(chapter)
         if (location == null) {
@@ -225,6 +276,8 @@ class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleL
 
     private fun startPlayback(mp: MediaPlayer) {
         mp.start()
+        handler.removeCallbacks(verseTicker)
+        handler.post(verseTicker)
         // Setting playback params on a paused player would start it, so speed is applied only while playing.
         try {
             mp.playbackParams = mp.playbackParams.setSpeed(speed)
@@ -262,6 +315,8 @@ class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleL
         if (!prepared) return
         val target = (mp.currentPosition + deltaMs).coerceIn(0L, mp.duration.toLong().coerceAtLeast(0L))
         mp.seekTo(target.toInt())
+        handler.removeCallbacks(verseTicker)
+        handler.post(verseTicker)
     }
 
     override fun setSpeed(speed: Float) {
@@ -272,11 +327,13 @@ class AndroidAudioBiblePlayer(context: Context, private val library: AudioBibleL
 
     override fun next(chapter: AudioChapter): AudioChapter? = library.index.next(chapter)
     override fun previous(chapter: AudioChapter): AudioChapter? = library.index.previous(chapter)
+    override fun verseStartMs(chapter: AudioChapter, verse: Int): Long? = library.timings.startOf(chapter, verse)
 
     override val positionMs: Long get() = player?.takeIf { prepared }?.currentPosition?.toLong() ?: resumeFromMs
     override val durationMs: Long get() = player?.takeIf { prepared }?.duration?.toLong()?.coerceAtLeast(0L) ?: 0L
 
     private fun release() {
+        handler.removeCallbacks(verseTicker)
         val mp = player ?: return
         player = null
         prepared = false

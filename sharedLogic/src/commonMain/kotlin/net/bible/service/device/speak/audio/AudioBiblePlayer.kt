@@ -43,12 +43,17 @@ interface AudioBiblePlayer {
     fun next(chapter: AudioChapter): AudioChapter?
     fun previous(chapter: AudioChapter): AudioChapter?
 
+    /** Where [verse] starts in [chapter]'s recording, when verse timings are available. */
+    fun verseStartMs(chapter: AudioChapter, verse: Int): Long? = null
+
     val positionMs: Long
     val durationMs: Long
 }
 
 interface AudioBibleListener {
     fun onChapterStarted(chapter: AudioChapter)
+    /** The reader moved on to [verse] (only reported when verse timings are available). */
+    fun onVerseStarted(chapter: AudioChapter, verse: Int) {}
     /** The last recorded chapter ended. */
     fun onFinished()
     fun onError(message: String)

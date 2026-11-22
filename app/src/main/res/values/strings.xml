@@ -654,6 +654,7 @@
     <string name="audio_bible_folder_scanning">Looking for chapter recordings…</string>
     <string name="audio_bible_folder_empty">No chapter recordings found in this folder.</string>
     <string name="audio_bible_folder_found">%1$d chapter recordings found. Played for %2$s Bibles.</string>
+    <string name="audio_bible_folder_found_with_timings">%1$d chapter recordings found, with verse highlighting. Played for %2$s Bibles.</string>
     <string name="audio_bible_playback_error">Could not play the audio Bible recording.</string>
     <string name="conf_speak_synchronize">Text follows speech</string>
     <string name="conf_speak_auto_bookmark">Automatic bookmarking</string>
