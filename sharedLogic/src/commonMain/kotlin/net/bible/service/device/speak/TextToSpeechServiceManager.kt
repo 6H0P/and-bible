@@ -283,8 +283,17 @@ class TextToSpeechServiceManager constructor(
         return true
     }
 
+    /**
+     * Where audio playback was when it last stopped. Stop saves the playing position after shutting playback
+     * down, so it must still be reported then; the TTS providers were never set up and have no position.
+     */
+    private var stoppedAudioPosition: Pair<SwordBook, Verse>? = null
+
     private fun stopAudio() {
         if (!audioMode) return
+        val book = audioBook
+        val chapter = audioChapter
+        stoppedAudioPosition = if (book != null && chapter != null) audioVerse(book, chapter)?.let { book to it } else null
         platform.audioBible?.stop()
         audioBook = null
         audioChapter = null
@@ -480,7 +489,7 @@ class TextToSpeechServiceManager constructor(
         get() = lock.withLock {
             val book = audioBook
             val chapter = audioChapter
-            if (book != null && chapter != null) audioVerse(book, chapter) else null
+            if (book != null && chapter != null) audioVerse(book, chapter) else stoppedAudioPosition?.second
         } ?: mSpeakTextProvider.getCurrentlyPlayingKey()
 
     /** True while speaking, paused, or while an engine start is pending (engine created, init callback not yet received). */
@@ -488,7 +497,7 @@ class TextToSpeechServiceManager constructor(
         get() = isSpeaking || isPaused || (mTts != null && !engineReady)
 
     val currentlyPlayingBook: Book?
-        get() = audioBook ?: mSpeakTextProvider.getCurrentlyPlayingBook()
+        get() = lock.withLock { audioBook ?: stoppedAudioPosition?.first } ?: mSpeakTextProvider.getCurrentlyPlayingBook()
 
     fun isLanguageAvailable(langCode: String): Boolean {
         return ttsLanguageSupport.isLangKnownToBeSupported(langCode)
@@ -498,6 +507,7 @@ class TextToSpeechServiceManager constructor(
         lock.withLock {
             stopAudio()
             if (startAudioIfAvailable(book, verse)) return
+            stoppedAudioPosition = null
             movement = null
             startGeneration.incrementAndGet()
             statusTexts = emptyMap()
@@ -513,6 +523,7 @@ class TextToSpeechServiceManager constructor(
     fun speakTextLegacy(book: Book, keyList: List<Key>, queue: Boolean) {
         lock.withLock {
             stopAudio()
+            stoppedAudioPosition = null
             movement = null
             val retainsQueue = queue && mSpeakTextProvider === legacySpeakTextProvider && isSpeaking && !isPaused &&
                 mTts != null && platform.preferredEnginePackage == configuredEnginePackage
@@ -530,6 +541,7 @@ class TextToSpeechServiceManager constructor(
     fun speakGeneric(key: BookAndKey) {
         lock.withLock {
             stopAudio()
+            stoppedAudioPosition = null
             movement = null
             startGeneration.incrementAndGet()
             statusTexts = emptyMap()
